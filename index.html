@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Baby Cradle Dashboard</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* ... (same CSS styles as before) ... */
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>👶 Smart Baby Cradle Dashboard</h1>
+            <p>Real-time monitoring and alerts</p>
+            <div id="connectionStatus">
+                <span class="status-indicator status-offline"></span>
+                <span>Disconnected</span>
+            </div>
+        </div>
+        
+        <div class="dashboard">
+            <!-- Real-time Sensors -->
+            <div class="card">
+                <h2>📊 Real-time Sensor Data</h2>
+                <div class="sensor-grid">
+                    <div class="sensor-card">
+                        <div>🌡️ Room Temp</div>
+                        <div class="sensor-value" id="roomTemp">--</div>
+                        <div class="sensor-unit">°C</div>
+                    </div>
+                    <div class="sensor-card">
+                        <div>💧 Humidity</div>
+                        <div class="sensor-value" id="roomHum">--</div>
+                        <div class="sensor-unit">%</div>
+                    </div>
+                    <div class="sensor-card">
+                        <div>👶 Baby Temp</div>
+                        <div class="sensor-value" id="babyTemp">--</div>
+                        <div class="sensor-unit">°C</div>
+                    </div>
+                    <div class="sensor-card">
+                        <div>🎤 Sound Level</div>
+                        <div class="sensor-value" id="micValue">--</div>
+                        <div class="sensor-unit">ADC</div>
+                    </div>
+                </div>
+                
+                <div class="alert-panel">
+                    <h3>🚨 Active Alerts</h3>
+                    <div id="activeAlerts">
+                        <div class="alert" style="background: #e8f5e8; border-left: 4px solid #4CAF50;">
+                            <div>No active alerts</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Charts -->
+            <div class="card">
+                <h2>📈 Temperature Trends</h2>
+                <div class="chart-container">
+                    <canvas id="tempChart"></canvas>
+                </div>
+                <div class="controls">
+                    <button onclick="downloadData()" class="download-btn">📥 Download Logs</button>
+                    <button onclick="clearAlerts()">🗑️ Clear Alerts</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Alerts History -->
+        <div class="card">
+            <h2>📋 Alert History</h2>
+            <div id="alertHistory" style="max-height: 300px; overflow-y: auto;">
+                <p>No alert history yet...</p>
+            </div>
+        </div>
+    </div>
+
+    <audio id="alertSound" preload="auto">
+        <source src="https://assets.mixkit.co/active_storage/sfx/257/257-preview.mp3" type="audio/mpeg">
+    </audio>
+
+    <script>
+        // Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyBv2fcGVOYlBORULLErZKqZ1WauSxRj6FI",
+            authDomain: "smart-baby-cradle-b2f92.firebaseapp.com",
+            databaseURL: "https://smart-baby-cradle-b2f92-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "smart-baby-cradle-b2f92",
+            storageBucket: "smart-baby-cradle-b2f92.firebasestorage.app",
+            messagingSenderId: "169217508469",
+            appId: "1:169217508469:web:57cda5d9f07a8da760e43c"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const database = firebase.database();
+
+        // Chart initialization
+        const tempChart = new Chart(document.getElementById('tempChart'), {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Room Temperature (°C)',
+                        data: [],
+                        borderColor: '#4361ee',
+                        backgroundColor: 'rgba(67, 97, 238, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    },
+                    {
+                        label: 'Baby Temperature (°C)',
+                        data: [],
+                        borderColor: '#f72585',
+                        backgroundColor: 'rgba(247, 37, 133, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: false,
+                        title: {
+                            display: true,
+                            text: 'Temperature (°C)'
+                        }
+                    }
+                }
+            }
+        });
+
+        let sensorDataHistory = [];
+        let lastAlertCheck = 0;
+
+        // Firebase listeners
+        database.ref('sensorData/latest').on('value', (snapshot) => {
+            const data = snapshot.val();
+            if (data) {
+                updateSensorDisplay(data);
+                updateChart(data);
+                checkAlerts(data);
+                updateConnectionStatus(true);
+                
+                // Store data for download
+                sensorDataHistory.push({
+                    timestamp: new Date().toISOString(),
+                    ...data
+                });
+                
+                // Keep only last 100 records
+                if (sensorDataHistory.length > 100) {
+                    sensorDataHistory.shift();
+                }
+            }
+        });
+
+        database.ref('alerts').on('value', (snapshot) => {
+            const alerts = snapshot.val();
+            updateAlertHistory(alerts);
+        });
+
+        function updateSensorDisplay(data) {
+            document.getElementById('roomTemp').textContent = data.roomTemperature?.toFixed(1) || '--';
+            document.getElementById('roomHum').textContent = data.roomHumidity?.toFixed(1) || '--';
+            document.getElementById('babyTemp').textContent = data.babyTemperature?.toFixed(1) || '--';
+            document.getElementById('micValue').textContent = data.micValue || '--';
+            
+            // Update background color based on baby temperature
+            const babyTempElem = document.getElementById('babyTemp').parentElement;
+            if (data.babyTemperature > 37.5) {
+                babyTempElem.style.background = 'linear-gradient(135deg, #e63946, #f72585)';
+            } else {
+                babyTempElem.style.background = 'linear-gradient(135deg, #4361ee, #3a0ca3)';
+            }
+        }
+
+        function updateChart(data) {
+            const now = new Date().toLocaleTimeString();
+            
+            // Add new data point
+            tempChart.data.labels.push(now);
+            tempChart.data.datasets[0].data.push(data.roomTemperature);
+            tempChart.data.datasets[1].data.push(data.babyTemperature);
+            
+            // Keep only last 20 data points
+            if (tempChart.data.labels.length > 20) {
+                tempChart.data.labels.shift();
+                tempChart.data.datasets[0].data.shift();
+                tempChart.data.datasets[1].data.shift();
+            }
+            
+            tempChart.update();
+        }
+
+        function checkAlerts(data) {
+            const alertsContainer = document.getElementById('activeAlerts');
+            let activeAlerts = [];
+            
+            if (data.isCrying) {
+                activeAlerts.push({
+                    type: 'CRYING',
+                    message: 'Baby is crying!',
+                    class: 'cry',
+                    icon: '😢'
+                });
+            }
+            
+            if (data.hasFever) {
+                activeAlerts.push({
+                    type: 'FEVER',
+                    message: `Baby has fever: ${data.babyTemperature}°C`,
+                    class: 'fever',
+                    icon: '🌡️'
+                });
+            }
+            
+            if (data.isWet) {
+                activeAlerts.push({
+                    type: 'MOISTURE',
+                    message: 'Diaper moisture detected!',
+                    class: 'moisture',
+                    icon: '💧'
+                });
+            }
+            
+            if (activeAlerts.length === 0) {
+                alertsContainer.innerHTML = `
+                    <div class="alert" style="background: #e8f5e8; border-left: 4px solid #4CAF50;">
+                        <div>No active alerts</div>
+                    </div>
+                `;
+            } else {
+                alertsContainer.innerHTML = activeAlerts.map(alert => `
+                    <div class="alert ${alert.class} pulse">
+                        <div>
+                            <span class="alert-icon">${alert.icon}</span>
+                            <strong>${alert.type}</strong>: ${alert.message}
+                        </div>
+                        <div>${new Date().toLocaleTimeString()}</div>
+                    </div>
+                `).join('');
+                
+                // Play alert sound for new critical alerts (throttle to avoid spam)
+                const now = Date.now();
+                if ((now - lastAlertCheck > 5000) && (data.isCrying || data.hasFever)) {
+                    playAlertSound();
+                    lastAlertCheck = now;
+                }
+            }
+        }
+
+        function updateAlertHistory(alerts) {
+            const historyContainer = document.getElementById('alertHistory');
+            
+            if (!alerts) {
+                historyContainer.innerHTML = '<p>No alert history yet...</p>';
+                return;
+            }
+            
+            const alertList = Object.values(alerts).reverse(); // Show latest first
+            
+            historyContainer.innerHTML = alertList.map(alert => `
+                <div class="alert ${alert.type.toLowerCase()}">
+                    <div>
+                        <span class="alert-icon">${getAlertIcon(alert.type)}</span>
+                        <strong>${alert.type}</strong>: ${getAlertMessage(alert)}
+                    </div>
+                    <div>${new Date(alert.timestamp).toLocaleString()}</div>
+                </div>
+            `).join('');
+        }
+
+        function getAlertIcon(type) {
+            switch(type) {
+                case 'CRYING': return '😢';
+                case 'FEVER': return '🌡️';
+                case 'MOISTURE': return '💧';
+                default: return '⚠️';
+            }
+        }
+
+        function getAlertMessage(alert) {
+            switch(alert.type) {
+                case 'CRYING': return `Cry detected (Value: ${alert.value})`;
+                case 'FEVER': return `High temperature: ${alert.value}°C`;
+                case 'MOISTURE': return `Wetness detected (Value: ${alert.value})`;
+                default: return alert.message || alert.value;
+            }
+        }
+
+        function playAlertSound() {
+            const alertSound = document.getElementById('alertSound');
+            alertSound.play().catch(e => console.log('Audio play failed:', e));
+        }
+
+        function updateConnectionStatus(connected) {
+            const statusElem = document.getElementById('connectionStatus');
+            const indicator = statusElem.querySelector('.status-indicator');
+            const text = statusElem.querySelector('span:last-child');
+            
+            if (connected) {
+                indicator.className = 'status-indicator status-online';
+                text.textContent = 'Connected to Cradle';
+            } else {
+                indicator.className = 'status-indicator status-offline';
+                text.textContent = 'Disconnected';
+            }
+        }
+
+        function downloadData() {
+            if (sensorDataHistory.length === 0) {
+                alert('No data available to download yet.');
+                return;
+            }
+            
+            // Create CSV content
+            let csv = 'Timestamp,Room Temp (°C),Room Hum (%),Baby Temp (°C),Mic Value,Moisture Value,Is Crying,Is Wet,Has Fever\n';
+            
+            sensorDataHistory.forEach(row => {
+                csv += `${row.timestamp},${row.roomTemperature || ''},${row.roomHumidity || ''},${row.babyTemperature || ''},${row.micValue || ''},${row.moistureValue || ''},${row.isCrying || false},${row.isWet || false},${row.hasFever || false}\n`;
+            });
+            
+            // Create and download file
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `baby-cradle-logs-${new Date().toISOString().split('T')[0]}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+        }
+
+        function clearAlerts() {
+            if (confirm('Are you sure you want to clear all alerts?')) {
+                database.ref('alerts').remove();
+            }
+        }
+
+        // Simulate initial connection status
+        setTimeout(() => updateConnectionStatus(true), 2000);
+    </script>
+</body>
+</html>
